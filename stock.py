@@ -1,232 +1,303 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
 import feedparser
 import urllib.parse
+from dataclasses import dataclass
 
-st.set_page_config(page_title="AI Stack Story", layout="wide")
-
-# -----------------------------
-# NEW TITLE (UPDATED)
-# -----------------------------
-st.title("⚡ Why AI Stack Matters - Big Players in Each AI Layer")
-st.subheader("Energy → Chips → Infrastructure → Models → Applications")
-
+st.set_page_config(page_title="AI Infrastructure Terminal", layout="wide")
 
 # -----------------------------
-# CACHE
+# CONFIGURATION
 # -----------------------------
-@st.cache_resource
-def get_ticker(ticker: str):
-    return yf.Ticker(ticker)
+@dataclass
+class Config:
+    history_period: str = "2y"
+    forecast_days: int = 180
+    simulations: int = 500
+    confidence_level: float = 0.80
+    trading_days_per_year: int = 252
 
-
-@st.cache_data
-def load_history(ticker: str):
-    return yf.Ticker(ticker).history(period="1y")
-
-
-@st.cache_data
-def load_info(ticker: str):
-    return yf.Ticker(ticker).info
-
+CFG = Config()
 
 # -----------------------------
-# CHART (IMPROVED CLARITY)
+# FORMATTING
 # -----------------------------
-def chart(hist, name):
-    fig = go.Figure()
+def format_money(x: float | None) -> str:
+    if x is None:
+        return "N/A"
+    if x >= 1e12:
+        return f"${x / 1e12:.2f}T"
+    if x >= 1e9:
+        return f"${x / 1e9:.2f}B"
+    if x >= 1e6:
+        return f"${x / 1e6:.2f}M"
+    return f"${x:,.0f}"
 
-    fig.add_trace(go.Scatter(
-        x=hist.index,
-        y=hist["Close"],
-        line=dict(color="royalblue"),
-        name="Stock Price"
-    ))
+def format_percent(x: float | None) -> str:
+    return "N/A" if x is None else f"{x * 100:.1f}%"
 
-    fig.update_layout(
-        title=f"{name} — Stock Price (1Y)",
-        height=350,
-        yaxis_title="Price (USD)",
-        xaxis_title="Date",
-        margin=dict(l=10, r=10, t=50, b=10)
+# -----------------------------
+# DATA LOADING
+# -----------------------------
+@st.cache_data(ttl=300)  # 5-minute TTL for price data
+def load_history(ticker: str) -> pd.DataFrame | None:
+    try:
+        df = yf.Ticker(ticker).history(period=CFG.history_period)
+        if df.empty:
+            return None
+        return df
+    except Exception as e:
+        st.error(f"Failed to load {ticker}: {e}")
+        return None
+
+@st.cache_data(ttl=60)  # 1-minute TTL for live info
+def load_info(ticker: str) -> dict:
+    try:
+        return yf.Ticker(ticker).info
+    except Exception:
+        return {}
+
+# -----------------------------
+# SENTIMENT ANALYSIS
+# -----------------------------
+POSITIVE_WORDS = {"beat", "beats", "growth", "strong", "surge", "record", "outperform", "profit", "bullish"}
+NEGATIVE_WORDS = {"miss", "misses", "weak", "loss", "decline", "downgrade", "bearish", "slump", "warning"}
+
+def compute_sentiment(items: list) -> tuple[float, int]:
+    """Returns normalized sentiment score (-1 to 1) and article count."""
+    if not items:
+        return 0.0, 0
+    
+    total_score = 0
+    for item in items:
+        text = (item.title + " " + getattr(item, "summary", "")).lower()
+        pos = sum(word in text for word in POSITIVE_WORDS)
+        neg = sum(word in text for word in NEGATIVE_WORDS)
+        total_score += pos - neg
+    
+    # Normalize to [-1, 1] range
+    max_possible = len(items) * max(len(POSITIVE_WORDS), len(NEGATIVE_WORDS))
+    normalized = total_score / max_possible if max_possible > 0 else 0
+    return np.clip(normalized, -1, 1), len(items)
+
+def display_news(company_name: str, ticker: str) -> float:
+    """Fetches and displays news, returns sentiment score."""
+    query = urllib.parse.quote_plus(f"{company_name} {ticker} stock")
+    url = f"[news.google.com](https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en)"
+    
+    try:
+        feed = feedparser.parse(url)
+        items = feed.entries[:5]
+    except Exception:
+        return 0.0
+    
+    if not items:
+        return 0.0
+    
+    sentiment_score, count = compute_sentiment(items)
+    
+    # Sentiment indicator
+    if sentiment_score > 0.1:
+        indicator = "🟢 Positive"
+    elif sentiment_score < -0.1:
+        indicator = "🔴 Negative"
+    else:
+        indicator = "🟡 Neutral"
+    
+    with st.expander(f"📰 News ({count} articles) — {indicator}"):
+        for item in items:
+            st.markdown(f"• [{item.title}]({item.link})")
+    
+    return sentiment_score
+
+# -----------------------------
+# GBM FORECAST (VECTORIZED)
+# -----------------------------
+@dataclass
+class ForecastResult:
+    dates: pd.DatetimeIndex
+    mean_path: np.ndarray
+    upper_bound: np.ndarray
+    lower_bound: np.ndarray
+    annual_drift: float
+    annual_volatility: float
+    expected_return: float
+
+def run_gbm_forecast(df: pd.DataFrame) -> ForecastResult:
+    """Vectorized Monte Carlo GBM simulation."""
+    prices = df["Close"].values
+    log_returns = np.diff(np.log(prices))
+    
+    mu_daily = np.mean(log_returns)
+    sigma_daily = np.std(log_returns)
+    
+    # Annualized metrics
+    mu_annual = mu_daily * CFG.trading_days_per_year
+    sigma_annual = sigma_daily * np.sqrt(CFG.trading_days_per_year)
+    
+    last_price = prices[-1]
+    days = CFG.forecast_days
+    sims = CFG.simulations
+    
+    # Vectorized simulation: generate all random shocks at once
+    shocks = np.random.standard_normal((days, sims))
+    
+    # GBM: S(t) = S(0) * exp((μ - σ²/2)t + σW(t))
+    drift_component = (mu_daily - 0.5 * sigma_daily**2)
+    cumulative_returns = np.cumsum(drift_component + sigma_daily * shocks, axis=0)
+    paths = last_price * np.exp(cumulative_returns)
+    
+    # Percentiles for confidence band
+    alpha = (1 - CFG.confidence_level) / 2
+    lower_pct = alpha * 100
+    upper_pct = (1 - alpha) * 100
+    
+    future_dates = pd.date_range(df.index[-1], periods=days + 1, freq="B")[1:]
+    
+    return ForecastResult(
+        dates=future_dates,
+        mean_path=np.mean(paths, axis=1),
+        upper_bound=np.percentile(paths, upper_pct, axis=1),
+        lower_bound=np.percentile(paths, lower_pct, axis=1),
+        annual_drift=mu_annual,
+        annual_volatility=sigma_annual,
+        expected_return=(np.mean(paths[-1, :]) - last_price) / last_price
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+# -----------------------------
+# VISUALIZATION
+# -----------------------------
+def create_forecast_chart(df: pd.DataFrame, name: str, forecast: ForecastResult) -> go.Figure:
+    fig = go.Figure()
+    
+    # Historical prices
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df["Close"],
+        name="Historical",
+        line=dict(color="#3b82f6", width=2)
+    ))
+    
+    # Forecast mean
+    fig.add_trace(go.Scatter(
+        x=forecast.dates,
+        y=forecast.mean_path,
+        name="Expected Path",
+        line=dict(color="#f97316", width=2, dash="dot")
+    ))
+    
+    # Confidence band
+    fig.add_trace(go.Scatter(
+        x=forecast.dates,
+        y=forecast.upper_bound,
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo="skip"
+    ))
+    fig.add_trace(go.Scatter(
+        x=forecast.dates,
+        y=forecast.lower_bound,
+        fill="tonexty",
+        fillcolor="rgba(249, 115, 22, 0.15)",
+        line=dict(width=0),
+        name=f"{CFG.confidence_level:.0%} Confidence"
+    ))
+    
+    fig.update_layout(
+        title=dict(text=name, font=dict(size=16)),
+        height=380,
+        yaxis_title="Price ($)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+    
+    return fig
 
+def display_model_stats(forecast: ForecastResult, sentiment: float):
+    drift_direction = "📈 Bullish" if forecast.annual_drift > 0 else "📉 Bearish"
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Annual Drift", format_percent(forecast.annual_drift))
+    col2.metric("Annual Volatility", format_percent(forecast.annual_volatility))
+    col3.metric(f"{CFG.forecast_days}d Expected Return", format_percent(forecast.expected_return))
+    col4.metric("Sentiment", f"{sentiment:+.2f}")
+    
+    st.caption(f"Model: GBM Monte Carlo ({CFG.simulations:,} paths) • {drift_direction}")
 
 # -----------------------------
-# NEWS (FIXED RSS)
+# COMPANY CARD
 # -----------------------------
-def show_news(company_name, ticker):
-    st.subheader("📰 Latest News")
-
-    query = urllib.parse.quote_plus(f"{company_name} {ticker}")
-    url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-
-    feed = feedparser.parse(url)
-    entries = feed.entries[:6]
-
-    if not entries:
-        st.warning("No news available right now.")
-        return
-
-    for entry in entries:
-        st.markdown(f"""
-**[{entry.get('title','No title')}]({entry.get('link','#')})**  
-_{entry.get('published','')}_  
-""")
-
-
-# -----------------------------
-# FINANCIALS
-# -----------------------------
-def safe_financials(ticker_obj):
-    try:
-        income = ticker_obj.income_stmt
-        if income is None or income.empty:
-            return None, None
-
-        revenue = income.loc["Total Revenue"].iloc[0]
-        net_income = income.loc["Net Income"].iloc[0]
-        return revenue, net_income
-    except:
-        return None, None
-
-
-# -----------------------------
-# COMPANY SECTION
-# -----------------------------
-def company_section(name, ticker, story):
-
-    st.header(f"{story['icon']} {story['stage']}: {story['title']}")
-
-    t = get_ticker(ticker)
-    hist = load_history(ticker)
+def render_company(name: str, ticker: str):
+    df = load_history(ticker)
     info = load_info(ticker)
-
-    col1, col2, col3 = st.columns(3)
-
-    price = info.get("currentPrice")
-    market_cap = info.get("marketCap")
-    pe = info.get("trailingPE")
-
-    revenue, net_income = safe_financials(t)
-
-    with col1:
-        st.metric("Price", f"${price}" if price else "N/A")
-
-    with col2:
-        st.metric("Market Cap", f"{market_cap/1e12:.2f}T" if market_cap else "N/A")
-
-    with col3:
-        st.metric("P/E Ratio", f"{pe:.1f}" if pe else "N/A")
-
-    chart(hist, name)
-
-    tab1, tab2, tab3 = st.tabs(["📊 Financials", "🧠 Story", "📰 News"])
-
-    # -----------------------------
-    # FINANCIALS
-    # -----------------------------
-    with tab1:
-        st.subheader("Revenue & Profit Snapshot")
-
-        if revenue:
-            st.write(f"💰 Revenue: **${revenue:,.0f}**")
-        else:
-            st.write("Revenue data unavailable")
-
-        if net_income:
-            st.write(f"📈 Net Income: **${net_income:,.0f}**")
-        else:
-            st.write("Net income data unavailable")
-
-    # -----------------------------
-    # STORY (EXPANDED)
-    # -----------------------------
-    with tab2:
-        st.subheader("Why This Company Matters in the AI Stack")
-
-        st.markdown(story["long_story"])
-
-    # -----------------------------
-    # NEWS
-    # -----------------------------
-    with tab3:
-        show_news(name, ticker)
-
+    
+    if df is None or df.empty:
+        st.warning(f"No data available for {ticker}")
+        return
+    
+    st.subheader(f"{name} ({ticker})")
+    
+    # Key metrics row
+    c1, c2, c3, c4 = st.columns(4)
+    
+    price = info.get("currentPrice") or info.get("regularMarketPrice")
+    c1.metric("Price", f"${price:.2f}" if price else "N/A")
+    c2.metric("Market Cap", format_money(info.get("marketCap")))
+    c3.metric("P/E", f"{info.get('trailingPE', 'N/A'):.1f}" if info.get('trailingPE') else "N/A")
+    
+    change = info.get("regularMarketChangePercent")
+    c4.metric("Today", format_percent(change / 100) if change else "N/A", 
+              delta=f"{change:.2f}%" if change else None)
+    
+    # News and sentiment
+    sentiment = display_news(name, ticker)
+    
+    # Forecast
+    forecast = run_gbm_forecast(df)
+    fig = create_forecast_chart(df, name, forecast)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    display_model_stats(forecast, sentiment)
 
 # -----------------------------
-# STORY MAP (EXPANDED INSIGHTS)
+# MAIN APP
 # -----------------------------
-story_map = [
-    {
-        "name": "NextEra Energy",
-        "ticker": "NEE",
-        "stage": "Stage 1",
-        "icon": "⚡",
-        "title": "Energy — Foundation Layer",
-        "description": "Energy powers all AI computation and data centers.",
-        "long_story": """
-NextEra Energy sits at the foundation of the entire AI revolution because every AI system ultimately depends on electricity. As data centers expand globally to support model training and inference, power demand is becoming one of the most critical constraints in the AI ecosystem. Without scalable and reliable energy infrastructure, none of the higher layers—chips, cloud, or models—can operate at full capacity.
-
-This makes the energy layer structurally essential rather than optional. Companies in this segment indirectly benefit from AI growth because they provide the physical capacity that enables computation at scale. In the long run, energy becomes the “gatekeeper” of AI expansion, determining how fast the entire stack can grow.
-"""
-    },
-    {
-        "name": "NVIDIA",
-        "ticker": "NVDA",
-        "stage": "Stage 2",
-        "icon": "🔩",
-        "title": "Chips — Compute Layer",
-        "long_story": """
-NVIDIA is the compute engine of the AI stack. It transforms raw electrical energy into usable intelligence through highly parallel GPU architectures optimized for machine learning workloads. Every major AI breakthrough—from large language models to generative systems—relies on GPU acceleration.
-
-This layer is critical because it determines how efficiently intelligence can be created. The faster and more scalable the compute layer becomes, the more powerful AI models can grow. NVIDIA effectively sits at the bottleneck between energy and intelligence, capturing enormous value as demand for AI training and inference continues to accelerate globally.
-"""
-    },
-    {
-        "name": "Microsoft",
-        "ticker": "MSFT",
-        "stage": "Stage 3",
-        "icon": "🏗️",
-        "title": "Infrastructure — Scale Layer",
-        "long_story": """
-Microsoft provides the infrastructure backbone of AI through Azure, enabling companies to deploy and scale AI systems globally without managing physical hardware. This abstraction layer is what turns raw compute into accessible utility.
-
-The importance of this layer is scalability. Even if chips and models exist, they are useless without distributed systems that make them usable at enterprise scale. Microsoft captures value by embedding AI into cloud services, making it the default platform for enterprise AI adoption and long-term recurring revenue.
-"""
-    },
-    {
-        "name": "Alphabet",
-        "ticker": "GOOGL",
-        "stage": "Stage 4",
-        "icon": "🧠",
-        "title": "Models — Intelligence Layer",
-        "long_story": """
-Alphabet operates at the intelligence layer, where raw data is transformed into predictive and generative capability. Through advanced AI models, it powers search, advertising optimization, and emerging generative AI systems.
-
-This layer is critical because it defines the actual “thinking capability” of the AI stack. Without strong models, infrastructure and compute cannot produce meaningful outcomes. Alphabet’s advantage comes from its massive data ecosystem and integration of AI into core products like Search and YouTube, making intelligence directly monetizable.
-"""
-    },
-    {
-        "name": "Meta",
-        "ticker": "META",
-        "stage": "Stage 5",
-        "icon": "📱",
-        "title": "Applications — Monetization Layer",
-        "long_story": """
-Meta represents the application layer where AI directly generates revenue. Its platforms use AI for feed ranking, content recommendation, and advertising optimization, turning intelligence into user engagement and monetized attention.
-
-This layer is critical because it closes the loop of the AI stack. While lower layers create intelligence, applications convert it into cash flow. Meta benefits from AI by increasing ad efficiency, improving targeting precision, and maximizing time spent on platform—making AI a direct driver of revenue growth.
-"""
-    }
+INFRASTRUCTURE_STACK = [
+    ("⚡ Energy", [("Bloom Energy", "BE"), ("NextEra Energy", "NEE")]),
+    ("🔩 Compute", [("Nebius", "NBIS"), ("IREN", "IREN")]),
+    ("🔌 Networking", [("Astera Labs", "ALAB"), ("Credo", "CRDO")]),
 ]
 
+st.title("🚀 AI Infrastructure Terminal")
 
-# -----------------------------
-# RENDER
-# -----------------------------
-for c in story_map:
-    company_section(c["name"], c["ticker"], c)
+st.markdown("""
+**Probabilistic price forecasting** using Geometric Brownian Motion with Monte Carlo simulation.
+Confidence bands represent the range where prices are expected to fall with the configured probability.
+""")
+
+# Sidebar controls
+with st.sidebar:
+    st.header("⚙️ Settings")
+    CFG.forecast_days = st.slider("Forecast horizon (days)", 30, 365, 180)
+    CFG.simulations = st.slider("Monte Carlo paths", 100, 2000, 500, step=100)
+    CFG.confidence_level = st.slider("Confidence level", 0.5, 0.99, 0.80)
+    
+    st.divider()
+    st.caption("Data: Yahoo Finance • Model: GBM")
+
+st.divider()
+
+for layer_name, companies in INFRASTRUCTURE_STACK:
+    st.header(layer_name)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        render_company(*companies[0])
+    with col2:
+        render_company(*companies[1])
+    
+    st.divider()
