@@ -1,196 +1,191 @@
 import streamlit as st
 import yfinance as yf
-import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="AI Memory Stock Dashboard", layout="wide")
+st.set_page_config(page_title="The AI Investment Story", layout="wide")
+
+st.title("⚡ The AI Investment Story")
+st.subheader("How Energy becomes Intelligence → and Intelligence becomes Profit")
 
 # -----------------------------
-# CONFIG
+# HELPERS
 # -----------------------------
-st.title("📊 AI Memory Chip Stock Dashboard")
-st.subheader("SanDisk vs Peers: Growth vs Cyclicality vs AI Demand")
-
-stocks = {
-    "SanDisk": "SNDK",
-    "Micron": "MU",
-    "Western Digital": "WDC"
-}
-
-# -----------------------------
-# FUNCTIONS
-# -----------------------------
-def get_data(ticker):
+def load(ticker):
     t = yf.Ticker(ticker)
-    return t, t.info, t.history(period="1y"), t.financials
+    return t.history(period="1y"), t.info
 
-def cycle_risk(info, hist):
-    """
-    Simple heuristic:
-    - High volatility = higher cycle risk
-    - Negative margins = higher risk
-    - High revenue growth reduces risk slightly
-    """
-    volatility = hist["Close"].pct_change().std()
-
-    margin = info.get("profitMargins") or 0
-    growth = info.get("revenueGrowth") or 0
-
-    score = (
-        volatility * 50
-        - margin * 20
-        - growth * 10
-    )
-
-    return round(score, 2)
-
-def ai_demand_score(info, hist):
-    """
-    Proxy AI exposure score:
-    - revenue growth
-    - margin strength
-    - momentum
-    """
-    momentum = hist["Close"].pct_change().mean() * 100
-    growth = (info.get("revenueGrowth") or 0) * 100
-    margin = (info.get("profitMargins") or 0) * 100
-
-    score = (growth * 0.5) + (margin * 0.3) + (momentum * 0.2)
-
-    return round(score, 2)
-
-# -----------------------------
-# LOAD DATA
-# -----------------------------
-data = {}
-
-for name, ticker in stocks.items():
-    data[name] = get_data(ticker)
-
-# -----------------------------
-# PRICE COMPARISON
-# -----------------------------
-st.header("📈 Stock Price Comparison")
-
-fig = go.Figure()
-
-for name, (t, info, hist, fin) in data.items():
-    fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], name=name))
-
-fig.update_layout(title="1Y Stock Price Comparison", yaxis_title="Price")
-st.plotly_chart(fig, use_container_width=True)
-
-st.write("""
-This chart shows how market sentiment differs across the semiconductor storage ecosystem.  
-SanDisk typically reflects stronger AI-driven momentum, while peers show more cyclical behavior.
-""")
-
-# -----------------------------
-# FUNDAMENTALS TABLE
-# -----------------------------
-st.header("📊 Key Fundamental Comparison")
-
-rows = []
-
-for name, (t, info, hist, fin) in data.items():
-    rows.append({
-        "Company": name,
-        "Revenue Growth": info.get("revenueGrowth"),
-        "Profit Margin": info.get("profitMargins"),
-        "Forward PE": info.get("forwardPE"),
-        "Volatility": hist["Close"].pct_change().std(),
-        "Cycle Risk Score": cycle_risk(info, hist),
-        "AI Demand Score": ai_demand_score(info, hist)
-    })
-
-df = pd.DataFrame(rows)
-
-st.dataframe(df)
-
-st.write("""
-- Revenue Growth → demand acceleration  
-- Profit Margin → pricing power  
-- Cycle Risk Score → how sensitive the stock is to semiconductor cycles  
-- AI Demand Score → proxy for exposure to AI infrastructure demand  
-""")
-
-# -----------------------------
-# RISK VISUALIZATION
-# -----------------------------
-st.header("⚠️ Cycle Risk vs AI Exposure")
-
-fig = go.Figure()
-
-fig.add_trace(go.Bar(
-    x=df["Company"],
-    y=df["Cycle Risk Score"],
-    name="Cycle Risk",
-    marker_color="red"
-))
-
-fig.add_trace(go.Bar(
-    x=df["Company"],
-    y=df["AI Demand Score"],
-    name="AI Demand Score",
-    marker_color="green"
-))
-
-fig.update_layout(barmode="group", title="Risk vs AI Exposure")
-st.plotly_chart(fig, use_container_width=True)
-
-st.write("""
-This is the most important chart:
-
-- High AI score + high cycle risk = **high growth but unstable**
-- Lower cycle risk = more stable earnings base
-
-SanDisk typically sits in a hybrid zone:
-AI-driven upside layered on top of a cyclical semiconductor foundation.
-""")
-
-# -----------------------------
-# INDIVIDUAL BREAKDOWN
-# -----------------------------
-st.header("🧠 Deep Dive per Company")
-
-for name, (t, info, hist, fin) in data.items():
-
-    st.subheader(name)
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Revenue Growth", info.get("revenueGrowth"))
-    col2.metric("Profit Margin", info.get("profitMargins"))
-    col3.metric("Forward PE", info.get("forwardPE"))
-
+def chart(hist, title):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"]))
-    fig.update_layout(title=f"{name} Price Trend")
+    fig.update_layout(title=title, height=400)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.write("""
-    Interpretation:
-    This section shows whether the company behaves like a cyclical semiconductor stock or a structural AI beneficiary.  
-    Strong upward price trends paired with improving margins usually indicate AI-driven re-rating.
-    """)
+# -----------------------------
+# STORY INTRO
+# -----------------------------
+st.markdown("""
+## 🎬 The Big Idea
+
+AI is not a software trend.
+
+It is an **industrial stack**:
+
+> ⚡ Energy → 🔩 Chips → 🏗️ Infrastructure → 🧠 Models → 📱 Applications
+
+Each layer depends on the one below it.
+
+Money flows upward through this stack.
+""")
+
+st.divider()
 
 # -----------------------------
-# FINAL SUMMARY
+# 1. ENERGY LAYER
 # -----------------------------
-st.header("📌 Final Investment Interpretation")
+st.header("⚡ Stage 1: Energy — The Hidden Bottleneck")
+
+hist, info = load("NEE")
+
+chart(hist, "NextEra Energy — Powering the AI Era")
 
 st.write("""
-### What this dashboard tells you:
+AI requires massive electricity.
 
-- Semiconductor storage stocks are **highly cyclical by nature**
-- AI demand is temporarily masking that cyclicality
-- The key investment question is sustainability of AI-driven demand
+Data centers are becoming some of the largest power consumers in history.
 
-### Simple framework:
-- High AI Score + Low Cycle Risk → structural winner  
-- High AI Score + High Cycle Risk → momentum trade (riskier)  
-- Low AI Score + High Cycle Risk → traditional cyclical exposure  
+👉 Without energy, nothing else in AI works.
 
-SanDisk currently sits in the **high growth / medium-high risk zone**.
+Energy is the **foundation layer of intelligence production**.
+""")
+
+st.divider()
+
+# -----------------------------
+# 2. CHIPS LAYER
+# -----------------------------
+st.header("🔩 Stage 2: Chips — Turning Energy into Intelligence")
+
+hist, info = load("NVDA")
+
+chart(hist, "NVIDIA — The AI Compute Engine")
+
+st.write("""
+Chips are where energy becomes computation.
+
+NVIDIA dominates because:
+- GPUs parallelize intelligence
+- AI training scales with compute
+- Demand is exponential
+
+👉 Chips are the **conversion layer of AI value creation**.
+""")
+
+st.divider()
+
+# -----------------------------
+# 3. INFRASTRUCTURE
+# -----------------------------
+st.header("🏗️ Stage 3: Infrastructure — Scaling Intelligence")
+
+hist, info = load("MSFT")
+
+chart(hist, "Microsoft — Azure AI Infrastructure")
+
+st.write("""
+Infrastructure companies scale AI globally.
+
+They provide:
+- cloud compute
+- storage
+- enterprise AI deployment
+
+👉 This is where AI becomes **accessible at global scale**.
+""")
+
+st.divider()
+
+# -----------------------------
+# 4. MODELS
+# -----------------------------
+st.header("🧠 Stage 4: AI Models — Intelligence Itself")
+
+hist, info = load("GOOGL")
+
+chart(hist, "Alphabet — AI Model Development")
+
+st.write("""
+Models are the “brain layer” of AI.
+
+They:
+- learn from data
+- generate predictions
+- power downstream applications
+
+👉 This is where intelligence is actually created.
+""")
+
+st.divider()
+
+# -----------------------------
+# 5. APPLICATIONS
+# -----------------------------
+st.header("📱 Stage 5: Applications — Monetizing Intelligence")
+
+hist, info = load("META")
+
+chart(hist, "Meta — AI-Driven Consumer Platforms")
+
+st.write("""
+Applications are where AI becomes revenue.
+
+Examples:
+- social feeds
+- ads optimization
+- content generation
+
+👉 This is where intelligence becomes **cash flow**.
+""")
+
+st.divider()
+
+# -----------------------------
+# FINAL MESSAGE
+# -----------------------------
+st.header("📌 The Full Story")
+
+st.markdown("""
+### 🔁 The Flow of Value
+
+1. Energy powers compute  
+2. Chips convert energy into intelligence  
+3. Infrastructure scales intelligence  
+4. Models create intelligence  
+5. Applications monetize intelligence  
+
+---
+
+### 🧠 Key Insight
+
+You are not investing in companies.
+
+You are investing in **layers of a machine that turns electricity into profit**.
+
+---
+
+### 🚀 Why this matters
+
+Early in cycles:
+- Chips lead
+
+Mid-cycle:
+- Infrastructure leads
+
+Late cycle:
+- Applications dominate
+
+---
+
+### 📊 The real edge
+
+Understanding **where we are in the stack** matters more than picking individual stocks.
 """)
