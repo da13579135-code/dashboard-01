@@ -1,191 +1,212 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+import feedparser
+import urllib.parse
 
 st.set_page_config(page_title="The AI Investment Story", layout="wide")
 
-st.title("⚡ The AI Investment Story")
-st.subheader("How Energy becomes Intelligence → and Intelligence becomes Profit")
+st.title("⚡ The AI Investment Story+")
+st.subheader("From Energy → Chips → Infrastructure → Models → Applications")
+
 
 # -----------------------------
-# HELPERS
+# CACHE
 # -----------------------------
-def load(ticker):
-    t = yf.Ticker(ticker)
-    return t.history(period="1y"), t.info
+@st.cache_resource
+def get_ticker(ticker: str):
+    return yf.Ticker(ticker)
 
+
+@st.cache_data
+def load_history(ticker: str):
+    return yf.Ticker(ticker).history(period="1y")
+
+
+@st.cache_data
+def load_info(ticker: str):
+    return yf.Ticker(ticker).info
+
+
+# -----------------------------
+# CHART
+# -----------------------------
 def chart(hist, title):
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"]))
-    fig.update_layout(title=title, height=400)
+    fig.add_trace(go.Scatter(
+        x=hist.index,
+        y=hist["Close"],
+        line=dict(color="royalblue")
+    ))
+    fig.update_layout(title=title, height=350)
     st.plotly_chart(fig, use_container_width=True)
 
+
 # -----------------------------
-# STORY INTRO
+# FIXED NEWS (URL ENCODED + RSS)
+# -----------------------------
+def show_news(company_name, ticker):
+    st.subheader("📰 Latest News")
+
+    # ✅ FIX: encode query properly (prevents InvalidURL error)
+    query = urllib.parse.quote_plus(f"{company_name} {ticker}")
+
+    url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+
+    feed = feedparser.parse(url)
+    entries = feed.entries[:6]
+
+    if not entries:
+        st.warning("No news available right now.")
+        return
+
+    for entry in entries:
+        title = entry.get("title", "No title")
+        link = entry.get("link", "#")
+        published = entry.get("published", "")
+
+        st.markdown(f"""
+**[{title}]({link})**  
+_{published}_  
+""")
+
+
+# -----------------------------
+# FINANCIALS
+# -----------------------------
+def safe_financials(ticker_obj):
+    try:
+        income = ticker_obj.income_stmt
+        if income is None or income.empty:
+            return None, None
+
+        revenue = income.loc["Total Revenue"].iloc[0]
+        net_income = income.loc["Net Income"].iloc[0]
+        return revenue, net_income
+    except:
+        return None, None
+
+
+# -----------------------------
+# COMPANY SECTION
+# -----------------------------
+def company_section(name, ticker, story):
+
+    st.header(f"{story['icon']} {story['stage']}: {story['title']}")
+
+    t = get_ticker(ticker)
+    hist = load_history(ticker)
+    info = load_info(ticker)
+
+    col1, col2, col3 = st.columns(3)
+
+    price = info.get("currentPrice")
+    market_cap = info.get("marketCap")
+    pe = info.get("trailingPE")
+
+    revenue, net_income = safe_financials(t)
+
+    with col1:
+        st.metric("Price", f"${price}" if price else "N/A")
+
+    with col2:
+        st.metric("Market Cap", f"{market_cap/1e12:.2f}T" if market_cap else "N/A")
+
+    with col3:
+        st.metric("P/E Ratio", f"{pe:.1f}" if pe else "N/A")
+
+    chart(hist, f"{name} — 1Y Performance")
+
+    tab1, tab2, tab3 = st.tabs(["📊 Financials", "🧠 Story", "📰 News"])
+
+    with tab1:
+        st.subheader("Revenue & Profit Snapshot")
+
+        if revenue:
+            st.write(f"💰 Revenue: **${revenue:,.0f}**")
+        else:
+            st.write("Revenue data unavailable")
+
+        if net_income:
+            st.write(f"📈 Net Income: **${net_income:,.0f}**")
+        else:
+            st.write("Net income data unavailable")
+
+    with tab2:
+        st.subheader("AI Stack Role")
+        st.markdown(story["description"])
+        st.info(story["insight"])
+
+    with tab3:
+        show_news(name, ticker)
+
+
+# -----------------------------
+# STORY MAP
+# -----------------------------
+story_map = [
+    {
+        "name": "NextEra Energy",
+        "ticker": "NEE",
+        "stage": "Stage 1",
+        "icon": "⚡",
+        "title": "Energy — Foundation",
+        "description": "Energy powers all AI computation and data centers.",
+        "insight": "AI is driving massive electricity demand growth."
+    },
+    {
+        "name": "NVIDIA",
+        "ticker": "NVDA",
+        "stage": "Stage 2",
+        "icon": "🔩",
+        "title": "Chips — Compute Layer",
+        "description": "GPUs convert energy into intelligence at scale.",
+        "insight": "AI training demand continues exponential growth."
+    },
+    {
+        "name": "Microsoft",
+        "ticker": "MSFT",
+        "stage": "Stage 3",
+        "icon": "🏗️",
+        "title": "Infrastructure — Scale Layer",
+        "description": "Cloud infrastructure enables global AI deployment.",
+        "insight": "Azure is central to enterprise AI adoption."
+    },
+    {
+        "name": "Alphabet",
+        "ticker": "GOOGL",
+        "stage": "Stage 4",
+        "icon": "🧠",
+        "title": "Models — Intelligence Layer",
+        "description": "AI models generate reasoning and predictions.",
+        "insight": "Search + AI integration is key monetization path."
+    },
+    {
+        "name": "Meta",
+        "ticker": "META",
+        "stage": "Stage 5",
+        "icon": "📱",
+        "title": "Applications — Monetization Layer",
+        "description": "AI powers ads, feeds, and recommendations.",
+        "insight": "AI improves ad efficiency and revenue per user."
+    }
+]
+
+
+# -----------------------------
+# INTRO
 # -----------------------------
 st.markdown("""
-## 🎬 The Big Idea
-
-AI is not a software trend.
-
-It is an **industrial stack**:
+## 🎬 AI Investment Stack Thesis
 
 > ⚡ Energy → 🔩 Chips → 🏗️ Infrastructure → 🧠 Models → 📱 Applications
-
-Each layer depends on the one below it.
-
-Money flows upward through this stack.
 """)
 
 st.divider()
 
-# -----------------------------
-# 1. ENERGY LAYER
-# -----------------------------
-st.header("⚡ Stage 1: Energy — The Hidden Bottleneck")
-
-hist, info = load("NEE")
-
-chart(hist, "NextEra Energy — Powering the AI Era")
-
-st.write("""
-AI requires massive electricity.
-
-Data centers are becoming some of the largest power consumers in history.
-
-👉 Without energy, nothing else in AI works.
-
-Energy is the **foundation layer of intelligence production**.
-""")
-
-st.divider()
 
 # -----------------------------
-# 2. CHIPS LAYER
+# RENDER APP
 # -----------------------------
-st.header("🔩 Stage 2: Chips — Turning Energy into Intelligence")
-
-hist, info = load("NVDA")
-
-chart(hist, "NVIDIA — The AI Compute Engine")
-
-st.write("""
-Chips are where energy becomes computation.
-
-NVIDIA dominates because:
-- GPUs parallelize intelligence
-- AI training scales with compute
-- Demand is exponential
-
-👉 Chips are the **conversion layer of AI value creation**.
-""")
-
-st.divider()
-
-# -----------------------------
-# 3. INFRASTRUCTURE
-# -----------------------------
-st.header("🏗️ Stage 3: Infrastructure — Scaling Intelligence")
-
-hist, info = load("MSFT")
-
-chart(hist, "Microsoft — Azure AI Infrastructure")
-
-st.write("""
-Infrastructure companies scale AI globally.
-
-They provide:
-- cloud compute
-- storage
-- enterprise AI deployment
-
-👉 This is where AI becomes **accessible at global scale**.
-""")
-
-st.divider()
-
-# -----------------------------
-# 4. MODELS
-# -----------------------------
-st.header("🧠 Stage 4: AI Models — Intelligence Itself")
-
-hist, info = load("GOOGL")
-
-chart(hist, "Alphabet — AI Model Development")
-
-st.write("""
-Models are the “brain layer” of AI.
-
-They:
-- learn from data
-- generate predictions
-- power downstream applications
-
-👉 This is where intelligence is actually created.
-""")
-
-st.divider()
-
-# -----------------------------
-# 5. APPLICATIONS
-# -----------------------------
-st.header("📱 Stage 5: Applications — Monetizing Intelligence")
-
-hist, info = load("META")
-
-chart(hist, "Meta — AI-Driven Consumer Platforms")
-
-st.write("""
-Applications are where AI becomes revenue.
-
-Examples:
-- social feeds
-- ads optimization
-- content generation
-
-👉 This is where intelligence becomes **cash flow**.
-""")
-
-st.divider()
-
-# -----------------------------
-# FINAL MESSAGE
-# -----------------------------
-st.header("📌 The Full Story")
-
-st.markdown("""
-### 🔁 The Flow of Value
-
-1. Energy powers compute  
-2. Chips convert energy into intelligence  
-3. Infrastructure scales intelligence  
-4. Models create intelligence  
-5. Applications monetize intelligence  
-
----
-
-### 🧠 Key Insight
-
-You are not investing in companies.
-
-You are investing in **layers of a machine that turns electricity into profit**.
-
----
-
-### 🚀 Why this matters
-
-Early in cycles:
-- Chips lead
-
-Mid-cycle:
-- Infrastructure leads
-
-Late cycle:
-- Applications dominate
-
----
-
-### 📊 The real edge
-
-Understanding **where we are in the stack** matters more than picking individual stocks.
-""")
+for c in story_map:
+    company_section(c["name"], c["ticker"], c)
