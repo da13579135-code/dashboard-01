@@ -8,36 +8,42 @@ import urllib.parse
 
 st.set_page_config(page_title="AI Infrastructure Terminal", layout="wide")
 
+# -----------------------------
+# FIX METRIC TEXT SIZE (CSS)
+# -----------------------------
+st.markdown("""
+<style>
+[data-testid="stMetricLabel"] {
+    font-size: 0.75rem !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.1rem !important;
+}
+[data-testid="stMetricDelta"] {
+    font-size: 0.75rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("AI Infrastructure Dashboard")
 
 # -----------------------------
-# INTRO PARAGRAPH
+# INTRO
 # -----------------------------
 st.markdown("""
-This dashboard analyzes companies across the AI infrastructure stack, including energy, compute, and networking layers. 
-It combines market data, news sentiment, and a probabilistic forecasting model based on Monte Carlo simulation using Geometric Brownian Motion. 
-The goal is to provide a structured view of how different parts of the AI ecosystem behave financially and how uncertainty evolves over time.
+This dashboard analyzes companies across the AI infrastructure stack, including power generation,
+compute, data centers, and networking. It combines market data, news sentiment, and probabilistic
+forecasting using Monte Carlo simulation based on Geometric Brownian Motion.
 """)
 
 # -----------------------------
-# SIDEBAR CONTROLS
+# SIDEBAR
 # -----------------------------
 st.sidebar.title("Settings")
 
-forecast_days = st.sidebar.slider(
-    "Forecast horizon (days)",
-    30, 365, 180
-)
-
-simulations = st.sidebar.slider(
-    "Monte Carlo paths",
-    100, 2000, 500, step=100
-)
-
-confidence_level = st.sidebar.slider(
-    "Confidence level",
-    0.50, 0.99, 0.80
-)
+forecast_days = st.sidebar.slider("Forecast horizon (days)", 30, 365, 180)
+simulations = st.sidebar.slider("Monte Carlo paths", 100, 2000, 500, step=100)
+confidence_level = st.sidebar.slider("Confidence level", 0.50, 0.99, 0.80)
 
 history_period = "2y"
 
@@ -61,37 +67,34 @@ def format_percent(x):
 # -----------------------------
 @st.cache_data(ttl=300)
 def load_history(ticker):
-    return yf.Ticker(ticker).history(period=history_period)
+    try:
+        df = yf.Ticker(ticker).history(period=history_period)
+        return df if not df.empty else None
+    except:
+        return None
 
 @st.cache_data(ttl=60)
 def load_info(ticker):
-    return yf.Ticker(ticker).info
+    try:
+        return yf.Ticker(ticker).info
+    except:
+        return {}
 
 # -----------------------------
 # SENTIMENT
 # -----------------------------
-POSITIVE_WORDS = {
-    "beat", "growth", "strong", "surge",
-    "record", "outperform", "profit", "bullish", "upgrade"
-}
-
-NEGATIVE_WORDS = {
-    "miss", "weak", "loss", "decline",
-    "downgrade", "bearish", "slump", "warning"
-}
+POSITIVE_WORDS = {"beat","growth","strong","surge","record","outperform","profit","bullish","upgrade"}
+NEGATIVE_WORDS = {"miss","weak","loss","decline","downgrade","bearish","slump","warning"}
 
 def compute_sentiment(items):
     if not items:
         return 0.0, 0
 
     total = 0
-
     for item in items:
         text = (item.title + " " + str(getattr(item, "summary", ""))).lower()
-
         pos = sum(word in text for word in POSITIVE_WORDS)
         neg = sum(word in text for word in NEGATIVE_WORDS)
-
         total += (pos - neg)
 
     return float(np.clip(total / max(len(items), 1), -1, 1)), len(items)
@@ -122,7 +125,7 @@ def display_news(company, ticker):
     return sentiment
 
 # -----------------------------
-# GBM FORECAST
+# GBM
 # -----------------------------
 def run_gbm(df):
     prices = df["Close"].values
@@ -134,28 +137,25 @@ def run_gbm(df):
     last_price = prices[-1]
 
     shocks = np.random.standard_normal((forecast_days, simulations))
-
     drift = (mu - 0.5 * sigma**2)
     cumulative = np.cumsum(drift + sigma * shocks, axis=0)
 
     paths = last_price * np.exp(cumulative)
 
     alpha = (1 - confidence_level) / 2
-
     upper = np.percentile(paths, (1 - alpha) * 100, axis=1)
     lower = np.percentile(paths, alpha * 100, axis=1)
     mean = np.mean(paths, axis=1)
 
     dates = pd.date_range(df.index[-1], periods=forecast_days + 1, freq="B")[1:]
 
-    return dates, mean, upper, lower, mu, sigma
+    return dates, mean, upper, lower
 
 # -----------------------------
-# CHART
+# PLOT
 # -----------------------------
 def plot(df, name):
-
-    dates, mean, upper, lower, mu, sigma = run_gbm(df)
+    dates, mean, upper, lower = run_gbm(df)
 
     fig = go.Figure()
 
@@ -173,12 +173,7 @@ def plot(df, name):
         line=dict(color="#f97316", dash="dot")
     ))
 
-    fig.add_trace(go.Scatter(
-        x=dates,
-        y=upper,
-        line=dict(width=0),
-        showlegend=False
-    ))
+    fig.add_trace(go.Scatter(x=dates, y=upper, line=dict(width=0), showlegend=False))
 
     fig.add_trace(go.Scatter(
         x=dates,
@@ -189,15 +184,8 @@ def plot(df, name):
         name=f"{confidence_level:.0%} Confidence Band"
     ))
 
-    fig.update_layout(
-        title=name,
-        height=380,
-        yaxis_title="Price ($)"
-    )
-
+    fig.update_layout(title=name, height=380, yaxis_title="Price ($)")
     st.plotly_chart(fig, use_container_width=True)
-
-    return mu, sigma
 
 # -----------------------------
 # COMPANY
@@ -207,13 +195,13 @@ def company(name, ticker):
     df = load_history(ticker)
     info = load_info(ticker)
 
-    if df is None:
-        st.warning(f"No data for {ticker}")
-        return
-
     st.subheader(f"{name} ({ticker})")
 
-    c1, c2, c3, c4 = st.columns(4)
+    if df is None:
+        st.warning("No market data available.")
+        return
+
+    c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1])
 
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     change = info.get("regularMarketChangePercent")
@@ -227,22 +215,37 @@ def company(name, ticker):
             "Today",
             format_percent(change / 100),
             delta=f"{change:.2f}%",
-            delta_color="normal" if change > 0 else "inverse"
+            delta_color="normal"
         )
     else:
         c4.metric("Today", "N/A")
 
-    sentiment = display_news(name, ticker)
-
+    display_news(name, ticker)
     plot(df, name)
 
 # -----------------------------
 # STACK
 # -----------------------------
 STACK = [
-    ("Energy", [("Bloom Energy","BE"), ("NextEra Energy","NEE")]),
-    ("Compute", [("Nebius","NBIS"), ("IREN","IREN")]),
-    ("Networking", [("Astera Labs","ALAB"), ("Credo","CRDO")]),
+    ("Power / Energy", [
+        ("NextEra Energy","NEE"),
+        ("Bloom Energy","BE")
+    ]),
+    ("Compute (HPC / GPU Exposure)", [
+        ("Nebius","NBIS"),
+        ("IREN","IREN")
+    ]),
+    ("Data Centers & Digital Infrastructure", [
+        ("Applied Digital","APLD"),
+        ("Core Scientific","CORZ")
+    ]),
+    ("Networking / Interconnects", [
+        ("Astera Labs","ALAB"),
+        ("Credo","CRDO")
+    ]),
+    ("Bitcoin / Compute-Adjacent", [
+        ("Cipher Mining","CIFR")
+    ])
 ]
 
 # -----------------------------
@@ -251,11 +254,10 @@ STACK = [
 for layer, comps in STACK:
     st.header(layer)
 
-    c1, c2 = st.columns(2)
+    cols = st.columns(len(comps))
 
-    with c1:
-        company(*comps[0])
-    with c2:
-        company(*comps[1])
+    for col, comp in zip(cols, comps):
+        with col:
+            company(*comp)
 
     st.divider()
